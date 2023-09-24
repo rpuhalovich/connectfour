@@ -52,4 +52,18 @@ describe('isWinner', () => {
 		];
 		expect(isWinner(2, grid)).toBe(true);
 	});
+
+	it('no winner', () => {
+		const grid: number[][] = [
+		  [ 0, 0, 0, 0, 0, 0 ],
+		  [ 0, 0, 0, 0, 0, 0 ],
+		  [ 0, 0, 0, 0, 0, 0 ],
+		  [ 0, 0, 0, 0, 0, 0 ],
+		  [ 0, 0, 0, 2, 0, 0 ],
+		  [ 0, 0, 0, 1, 2, 0 ],
+		  [ 0, 1, 1, 1, 2, 2 ]
+		];
+		expect(isWinner(2, grid)).toBe(false);
+		expect(isWinner(1, grid)).toBe(false);
+	});
 });
