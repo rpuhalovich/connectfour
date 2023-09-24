@@ -1,163 +1,88 @@
-import { Server } from 'socket.io';
-import { nanoid } from 'nanoid';
+import { Server } from "socket.io";
+import { randomUUID } from "crypto";
 
-import { createGrid, Game } from './game';
-
-const WINNING_SEQUENCE = 4;
-const COLUMNS = 7;
-const ROWS = 6;
-const CLIENT_URL = process.env.NODE_ENV === 'production'
-	? 'https://connectfour.pages.dev'
-	: 'http://localhost:5173';
-const GAMES = new Map<string, any>();
+import { Game, createGrid } from "./game";
 
 const io = new Server(6464, {
-	cors: { origin: CLIENT_URL, methods: ['GET', 'POST'] }
+    cors: { origin: "http://localhost:5173", methods: ["GET", "POST"] },
 });
 
-io.on('connection', (socket) => {
-	const me = socket.id;
+const GAMES = new Map<string, Game>();
 
-	socket.on('create', () => {
-		const new_uuid = nanoid(5);
+/**
+ * in this architecture, the server is the source of truth. the
+ * clients send updates, and the server sends back the updated
+ * state of the game (game.ts:Game). therefore, there's only one place to see
+ * the state of the game. it's not fragmeted
+ *
+ * also in this current architecture, it's important to note that any complex
+ * logic should be extracted to it's own functions. generally in a real work
+ * environment, the only thing that should be handled in the actual socket
+ * callbacks are input validations
+ */
+io.on("connection", (socket) => {
+    socket.on("create", () => {
+        const gameId: string = randomUUID();
 
-		GAMES.set(new_uuid, {
-			grid: createGrid(COLUMNS, ROWS),
-			drops: [],
-			socketOne: null,
-			socketTwo: null,
-			socketOneTurn: false,
-			get socketTurn() {
-				return this.socketOneTurn ? this.socketOne : this.socketTwo;
-			},
-			get socketWait() {
-				return this.socketOneTurn ? this.socketTwo : this.socketOne;
-			},
-		});
+        const columns: number = 7;
+        const rows: number = 6;
 
-		io.to(me).emit('created', new_uuid);
-		console.log(`game ${new_uuid} created`);
+        const game: Game = {
+            id: gameId,
+            grid: createGrid(rows, columns),
+            players: [socket.id],
+            playerCurrentTurn: socket.id,
+        };
 
-		manageGame(new_uuid);
-	});
+        GAMES.set(gameId, game);
 
-	socket.on('join', (uuid) => {
-		console.log(`game ${uuid} joined`);
+        io.to(socket.id).emit("created", gameId);
+    });
 
-		if (!GAMES.has(uuid)) {
-			io.to(me).emit('unavailable');
-			return;
-		}
+    // gameId is a uuid for the current game
+    socket.on("join", (gameId: string) => {
+        const game: Game | undefined = GAMES.get(gameId);
+        if (!game) {
+            io.to(socket.id).emit("unavailable");
+            return;
+        }
 
-		const game = GAMES.get(uuid);
-		if (game.socketOne && game.socketTwo) {
-			io.to(me).emit('full');
-			return;
-		}
+        if (game.players.length >= 2) {
+            io.to(socket.id).emit("full");
+            return;
+        }
 
-		io.to(me).emit('joined', game.drops);
-		manageGame(uuid);
-	});
+        io.to(socket.id).emit("joined", game);
+    });
 
-	// I don't like this function, but with the current architecture it's fine
-	function manageGame(uuid) {
-		console.log(`Managing game ${uuid}`);
+    socket.on("hover", (gameId: string, column: number) => {
+        const game: Game = GAMES.get(gameId);
+        if (game.playerCurrentTurn !== socket.id) return;
+        socket.to(gameId).volatile.emit("hover", column);
+    });
 
-		const game = GAMES.get(uuid);
+    socket.on("drop", (gameId: string, column: number) => {
+        const game: Game | undefined = GAMES.get(gameId);
+        if (!game) {
+            io.to(socket.id).emit("unavailable");
+            return;
+        }
 
-		socket.join(uuid);
+        if (game.playerCurrentTurn !== socket.id) return;
+        if (typeof column !== "number") return;
 
-		game.socketOne ? (game.socketTwo = me) : (game.socketOne = me);
-		if (game.socketOne && game.socketTwo) {
-			io.to(game.socketTurn).emit('turn');
-			io.to(game.socketWait).emit('wait');
-		}
+        socket.to(socket.it).emit("drop", column);
 
-		socket.on('hover', (column: number) => {
-			if (game.socketTurn !== me) return;
-			socket.to(uuid).volatile.emit('hover', column);
-		});
-
-		socket.on('drop', (column: number) => {
-			if (game.socketTurn !== me) return;
-			if (typeof column !== 'number') return;
-
-			socket.to(uuid).emit('drop', column);
-			game.drops.push(column);
-			game.grid[column][lowestFreeSlot(game.grid[column])] = game.socketOneTurn ? 1 : 2;
-
-			const win = winPositions(game, column, game.socketOneTurn ? 1 : 2);
-
-			if (win.length > 0) {
-				io.to(uuid).emit('win', [
-					[column, highestOccupiedSlot(game.grid[column])],
-					...win.flat(),
-				]);
-				game.drops = [];
-				game.grid = createGrid(COLUMNS, ROWS);
-			} else {
-				const newTurn = !game.socketOneTurn;
-				game.socketOneTurn = newTurn;
-			}
-		});
-
-		socket.on('disconnect', () => {
-			socket.to(uuid).emit('inactive');
-			if (game.socketOne === me) game.socketOne = null;
-			if (game.socketTwo === me) game.socketTwo = null;
-		});
-	}
+        game.drops.push(column);
+        game.grid[column][lowestFreeSlot(game.grid[column])] = game.socketOneTurn ? 1 : 2;
+        const win = winPositions(game, column, game.socketOneTurn ? 1 : 2);
+        if (win.length > 0) {
+            io.to(uuid).emit("win", [[column, highestOccupiedSlot(game.grid[column])], ...win.flat()]);
+            game.drops = [];
+            game.grid = createGrid(COLUMNS, ROWS);
+        } else {
+            const newTurn = !game.socketOneTurn;
+            game.socketOneTurn = newTurn;
+        }
+    });
 });
-
-function winPositions(game, col, player) {
-	const row = highestOccupiedSlot(game.grid[col]),
-		down = [0, 1],
-		right = [1, 0],
-		left = [-1, 0],
-		upRight = [1, -1],
-		downLeft = [-1, 1],
-		upLeft = [1, 1],
-		downRight = [-1, -1];
-
-	return [
-		...segments([down]),
-		...segments([right, left]),
-		...segments([upRight, downLeft]),
-		...segments([upLeft, downRight]),
-	];
-
-	function segments(directions) {
-		const lengths = directions.map(([colDir, rowDir]) =>
-			dirLength(col, row, colDir, rowDir),
-		);
-		const totalLength = lengths.reduce((total, length) => total + length, 0);
-		if (totalLength < WINNING_SEQUENCE - 1) return [];
-		return directions.map((dir, index) => dirPositions(dir, lengths[index]));
-	}
-
-	function dirPositions([colDir, rowDir], length) {
-		const positions = [];
-		for (let i = length; i > 0; i--) {
-			positions.push([col + i * colDir, row + i * rowDir]);
-		}
-		return positions;
-	}
-
-	function dirLength(col, row, colDir, rowDir) {
-		if (game.grid[col + colDir]?.[row + rowDir] !== player) return 0;
-		return dirLength(col + colDir, row + rowDir, colDir, rowDir) + 1;
-	}
-
-}
-
-function highestOccupiedSlot(rows) {
-	return 1 + (lowestFreeSlot(rows) ?? -1);
-}
-
-// gets lowest free spot in the array
-function lowestFreeSlot(rows) {
-	if (rows[0] > 0) return null;
-	return rows.length - [...rows].reverse().findIndex((slot) => slot < 1) - 1;
-}
-
-console.log("running...");
