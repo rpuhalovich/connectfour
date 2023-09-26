@@ -27,6 +27,8 @@ export function isWinner(player: number, grid: number[][]): boolean {
 
     for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
+            if (grid[r][c] !== player) continue;
+
             // horizontal
             for (let cc = c, cnt = 0; cc < cols; cc++) {
                 if (grid[r][cc] !== player) break;
